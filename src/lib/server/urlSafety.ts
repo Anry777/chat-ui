@@ -1,4 +1,6 @@
 // Shared server-side URL safety helper (exact behavior preserved)
+import { env as serverEnv } from "$env/dynamic/private";
+
 export function isValidUrl(urlString: string): boolean {
 	try {
 		const url = new URL(urlString.trim());
@@ -22,4 +24,17 @@ export function isValidUrl(urlString: string): boolean {
 	} catch {
 		return false;
 	}
+}
+
+export function isValidMcpUrl(urlString: string): boolean {
+	if (serverEnv.ALLOW_INSECURE_MCP === "true") {
+		try {
+			const url = new URL(urlString.trim());
+			return url.protocol === "https:" || url.protocol === "http:";
+		} catch {
+			return false;
+		}
+	}
+
+	return isValidUrl(urlString);
 }

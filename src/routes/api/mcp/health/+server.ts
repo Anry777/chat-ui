@@ -4,7 +4,7 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import type { KeyValuePair } from "$lib/types/Tool";
 import { config } from "$lib/server/config";
 import type { RequestHandler } from "./$types";
-import { isValidUrl } from "$lib/server/urlSafety";
+import { isValidMcpUrl } from "$lib/server/urlSafety";
 import { isStrictHfMcpLogin, hasNonEmptyToken } from "$lib/server/mcp/hf";
 
 interface HealthCheckRequest {
@@ -39,7 +39,7 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 
 		// URL validation handled above
 
-		if (!isValidUrl(url)) {
+		if (!isValidMcpUrl(url)) {
 			return new Response(
 				JSON.stringify({
 					ready: false,

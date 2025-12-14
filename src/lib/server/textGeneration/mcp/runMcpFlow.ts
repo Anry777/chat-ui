@@ -1,7 +1,7 @@
 import { config } from "$lib/server/config";
 import { MessageUpdateType, type MessageUpdate } from "$lib/types/MessageUpdate";
 import { getMcpServers } from "$lib/server/mcp/registry";
-import { isValidUrl } from "$lib/server/urlSafety";
+import { isValidMcpUrl } from "$lib/server/urlSafety";
 import { resetMcpToolsCache } from "$lib/server/mcp/tools";
 import { getOpenAiToolsForMcp } from "$lib/server/mcp/tools";
 import type {
@@ -117,7 +117,7 @@ export async function* runMcpFlow({
 		const before = servers.slice();
 		servers = servers.filter((s) => {
 			try {
-				return isValidUrl(s.url);
+				return isValidMcpUrl(s.url);
 			} catch {
 				return false;
 			}
@@ -354,6 +354,11 @@ export async function* runMcpFlow({
 			tools: oaTools,
 			tool_choice: "auto",
 		};
+		const completionBaseNoTools: Omit<ChatCompletionCreateParamsStreaming, "messages"> = {
+			...completionBase,
+			tools: undefined,
+			tool_choice: undefined,
+		};
 
 		const toPrimitive = (value: unknown) => {
 			if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
@@ -362,10 +367,45 @@ export async function* runMcpFlow({
 			return undefined;
 		};
 
+		const tryParseJsonString = (value: string): unknown | undefined => {
+			const trimmed = value.trim();
+			const looksLikeJson =
+				(trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+				(trimmed.startsWith("[") && trimmed.endsWith("]"));
+			if (!looksLikeJson) return undefined;
+			try {
+				return JSON.parse(trimmed);
+			} catch {
+				return undefined;
+			}
+		};
+
+		const reviveNestedJsonStrings = (value: unknown, depth = 0): unknown => {
+			if (depth > 4) return value;
+			if (typeof value === "string") {
+				const parsed = tryParseJsonString(value);
+				return parsed === undefined ? value : reviveNestedJsonStrings(parsed, depth + 1);
+			}
+			if (Array.isArray(value)) {
+				return value.map((v) => reviveNestedJsonStrings(v, depth + 1));
+			}
+			if (value && typeof value === "object") {
+				const out: Record<string, unknown> = {};
+				for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+					out[k] = reviveNestedJsonStrings(v, depth + 1);
+				}
+				return out;
+			}
+			return value;
+		};
+
 		const parseArgs = (raw: unknown): Record<string, unknown> => {
 			if (typeof raw !== "string" || raw.trim().length === 0) return {};
 			try {
-				return JSON.parse(raw);
+				const parsed = JSON.parse(raw) as unknown;
+				const revived = reviveNestedJsonStrings(parsed);
+				if (!revived || typeof revived !== "object" || Array.isArray(revived)) return {};
+				return revived as Record<string, unknown>;
 			} catch {
 				return {};
 			}
@@ -399,23 +439,128 @@ export async function* runMcpFlow({
 		for (let loop = 0; loop < 10; loop += 1) {
 			lastAssistantContent = "";
 			streamedContent = false;
+			let nonStreamCalls: NormalizedToolCall[] | null = null;
+			const modelName = String(targetModel.id ?? targetModel.name);
+			const isDeepseekChat = /deepseek-chat/i.test(modelName);
+			const isDeepseekReasonerLoop = /deepseek-reasoner/i.test(modelName);
+			const useNonStreamCompletion = isDeepseekChat || isDeepseekReasonerLoop;
+			const useToolsThisLoop = !((isDeepseekChat || isDeepseekReasonerLoop) && loop > 0);
+			const completionBaseThisLoop = useToolsThisLoop ? completionBase : completionBaseNoTools;
 
 			const completionRequest: ChatCompletionCreateParamsStreaming = {
-				...completionBase,
+				...completionBaseThisLoop,
 				messages: messagesOpenAI,
 			};
 
-			const completionStream: Stream<ChatCompletionChunk> = await openai.chat.completions.create(
-				completionRequest,
-				{
-					signal: abortSignal,
-					headers: {
-						"ChatUI-Conversation-ID": conv._id.toString(),
-						"X-use-cache": "false",
-						...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
-					},
+			const requestAbort = new AbortController();
+			const requestTimeoutMs = isDeepseekChat ? 60_000 : 120_000;
+			const anySignal = (AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }).any;
+			let abortHandler: (() => void) | null = null;
+			const requestSignal =
+				abortSignal && typeof anySignal === "function"
+					? anySignal([abortSignal, requestAbort.signal])
+					: requestAbort.signal;
+			if (abortSignal && typeof anySignal !== "function") {
+				abortHandler = () => requestAbort.abort();
+				if (abortSignal.aborted) {
+					requestAbort.abort();
+				} else {
+					abortSignal.addEventListener("abort", abortHandler, { once: true });
 				}
-			);
+			}
+			let requestTimeout: ReturnType<typeof setTimeout> | null = null;
+			requestTimeout = setTimeout(() => requestAbort.abort(), requestTimeoutMs);
+			const completionStartedAt = Date.now();
+
+			let completionStream: Stream<ChatCompletionChunk> | null = null;
+			try {
+				if (useNonStreamCompletion) {
+					console.info(
+						{ loop, model: modelName, toolsEnabled: useToolsThisLoop },
+						"[mcp] deepseek: using non-stream completion request"
+					);
+					const nonStream = await openai.chat.completions.create(
+						{ ...completionBaseThisLoop, messages: messagesOpenAI, stream: false },
+						{
+							signal: requestSignal,
+							headers: {
+								"ChatUI-Conversation-ID": conv._id.toString(),
+								"X-use-cache": "false",
+								...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+							},
+						}
+					);
+					const msgObj = nonStream.choices?.[0]?.message as
+						| (ChatCompletionMessageParam & {
+								reasoning?: string;
+								reasoning_content?: string;
+								tool_calls?: ChatCompletionMessageToolCall[];
+							})
+						| undefined;
+					const contentVal = msgObj?.content;
+					const msgContent = typeof contentVal === "string" ? contentVal : "";
+					const r =
+						typeof msgObj?.reasoning === "string"
+							? msgObj.reasoning
+							: typeof msgObj?.reasoning_content === "string"
+								? msgObj.reasoning_content
+								: "";
+					lastAssistantContent = (r && r.length > 0 ? `<think>${r}</think>` : "") + msgContent;
+					thinkOpen = false;
+					const tc: ChatCompletionMessageToolCall[] = Array.isArray(msgObj?.tool_calls)
+						? ((msgObj?.tool_calls ?? []) as ChatCompletionMessageToolCall[])
+						: [];
+					if (tc.length > 0) {
+						nonStreamCalls = tc.map((t) => ({
+							id: t.id,
+							name: t.function?.name ?? "",
+							arguments: t.function?.arguments ?? "",
+						}));
+					}
+					console.info(
+						{
+							loop,
+							model: modelName,
+							toolsEnabled: useToolsThisLoop,
+							durationMs: Date.now() - completionStartedAt,
+							contentLength: lastAssistantContent.length,
+							toolCallCount: nonStreamCalls?.length ?? 0,
+						},
+						"[mcp] deepseek: non-stream completion received"
+					);
+				} else {
+					console.info(
+						{ loop, model: modelName, toolsEnabled: useToolsThisLoop },
+						"[mcp] starting streamed completion request"
+					);
+					completionStream = await openai.chat.completions.create(completionRequest, {
+						signal: requestSignal,
+						headers: {
+							"ChatUI-Conversation-ID": conv._id.toString(),
+							"X-use-cache": "false",
+							...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+						},
+					});
+				}
+			} catch (err) {
+				if (requestAbort.signal.aborted && !abortSignal?.aborted) {
+					throw new Error("MCP completion timed out");
+				}
+				throw err;
+			} finally {
+				if (requestTimeout) clearTimeout(requestTimeout);
+				if (abortSignal && abortHandler) {
+					try {
+						abortSignal.removeEventListener("abort", abortHandler);
+					} catch {}
+				}
+				if (useNonStreamCompletion) {
+					console.debug(
+						{ loop, model: modelName, durationMs: Date.now() - completionStartedAt },
+						"[mcp] deepseek: completion request finished"
+					);
+				}
+			}
 
 			// If provider header was exposed, notify UI so it can render "via {provider}".
 			if (providerHeader) {
@@ -432,27 +577,101 @@ export async function* runMcpFlow({
 			let firstToolDeltaLogged = false;
 			let sawToolCall = false;
 			let tokenCount = 0;
-			for await (const chunk of completionStream) {
-				const choice = chunk.choices?.[0];
-				const delta = choice?.delta;
-				if (!delta) continue;
+			if (completionStream) {
+				try {
+					for await (const chunk of completionStream) {
+						const choice = chunk.choices?.[0];
+						const delta = choice?.delta;
+						if (!delta) continue;
 
-				const chunkToolCalls = delta.tool_calls ?? [];
-				if (chunkToolCalls.length > 0) {
-					sawToolCall = true;
-					for (const call of chunkToolCalls) {
-						const toolCall = call as unknown as {
-							index?: number;
-							id?: string;
-							function?: { name?: string; arguments?: string };
-						};
-						const index = toolCall.index ?? 0;
-						const current = toolCallState[index] ?? { arguments: "" };
-						if (toolCall.id) current.id = toolCall.id;
-						if (toolCall.function?.name) current.name = toolCall.function.name;
-						if (toolCall.function?.arguments) current.arguments += toolCall.function.arguments;
-						toolCallState[index] = current;
+						const chunkToolCalls = delta.tool_calls ?? [];
+						if (chunkToolCalls.length > 0) {
+							sawToolCall = true;
+							for (const call of chunkToolCalls) {
+								const toolCall = call as unknown as {
+									index?: number;
+									id?: string;
+									function?: { name?: string; arguments?: string };
+								};
+								const index = toolCall.index ?? 0;
+								const current = toolCallState[index] ?? { arguments: "" };
+								if (toolCall.id) current.id = toolCall.id;
+								if (toolCall.function?.name) current.name = toolCall.function.name;
+								if (toolCall.function?.arguments) current.arguments += toolCall.function.arguments;
+								toolCallState[index] = current;
+							}
+							if (!firstToolDeltaLogged) {
+								try {
+									const first =
+										toolCallState[
+											Object.keys(toolCallState)
+												.map((k) => Number(k))
+												.sort((a, b) => a - b)[0] ?? 0
+										];
+									console.info(
+										{ firstCallName: first?.name, hasId: Boolean(first?.id) },
+										"[mcp] observed streamed tool_call delta"
+									);
+									firstToolDeltaLogged = true;
+								} catch {}
+							}
+						}
+
+						const deltaContent = (() => {
+							if (typeof delta.content === "string") return delta.content;
+							const maybeParts = delta.content as unknown;
+							if (Array.isArray(maybeParts)) {
+								return maybeParts
+									.map((part) =>
+										typeof part === "object" &&
+										part !== null &&
+										"text" in part &&
+										typeof (part as Record<string, unknown>).text === "string"
+											? String((part as Record<string, unknown>).text)
+											: ""
+									)
+									.join("");
+							}
+							return "";
+						})();
+
+						// Provider-dependent reasoning fields (e.g., `reasoning` or `reasoning_content`).
+						const deltaReasoning: string =
+							typeof (delta as unknown as Record<string, unknown>)?.reasoning === "string"
+								? ((delta as unknown as { reasoning?: string }).reasoning as string)
+								: typeof (delta as unknown as Record<string, unknown>)?.reasoning_content === "string"
+									? ((delta as unknown as { reasoning_content?: string }).reasoning_content as string)
+									: "";
+
+						let combined = "";
+						if (deltaReasoning.trim().length > 0) {
+							if (!thinkOpen) {
+								combined += "<think>" + deltaReasoning;
+								thinkOpen = true;
+							} else {
+								combined += deltaReasoning;
+							}
+						}
+
+						if (deltaContent && deltaContent.length > 0) {
+							if (thinkOpen) {
+								combined += "</think>" + deltaContent;
+								thinkOpen = false;
+							} else {
+								combined += deltaContent;
+							}
+						}
+
+						if (combined.length > 0) {
+							lastAssistantContent += combined;
+							if (!sawToolCall) {
+								streamedContent = true;
+								yield { type: MessageUpdateType.Stream, token: combined };
+								tokenCount += combined.length;
+							}
+						}
 					}
+
 					if (!firstToolDeltaLogged) {
 						try {
 							const first =
@@ -468,74 +687,78 @@ export async function* runMcpFlow({
 							firstToolDeltaLogged = true;
 						} catch {}
 					}
-				}
+				} catch (err) {
+					const msg = String(err ?? "");
+					if (msg.includes("TypeError: terminated") || msg.includes("terminated")) {
+						console.warn(
+							{ err: msg, loop },
+							"[mcp] stream terminated during read; retrying non-stream"
+						);
+						const nonStream = await openai.chat.completions.create(
+							{ ...completionBase, messages: messagesOpenAI, stream: false },
+							{
+								signal: abortSignal,
+								headers: {
+									"ChatUI-Conversation-ID": conv._id.toString(),
+									"X-use-cache": "false",
+									...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+								},
+							}
+						);
 
-				const deltaContent = (() => {
-					if (typeof delta.content === "string") return delta.content;
-					const maybeParts = delta.content as unknown;
-					if (Array.isArray(maybeParts)) {
-						return maybeParts
-							.map((part) =>
-								typeof part === "object" &&
-								part !== null &&
-								"text" in part &&
-								typeof (part as Record<string, unknown>).text === "string"
-									? String((part as Record<string, unknown>).text)
-									: ""
-							)
-							.join("");
-					}
-					return "";
-				})();
-
-				// Provider-dependent reasoning fields (e.g., `reasoning` or `reasoning_content`).
-				const deltaReasoning: string =
-					typeof (delta as unknown as Record<string, unknown>)?.reasoning === "string"
-						? ((delta as unknown as { reasoning?: string }).reasoning as string)
-						: typeof (delta as unknown as Record<string, unknown>)?.reasoning_content === "string"
-							? ((delta as unknown as { reasoning_content?: string }).reasoning_content as string)
-							: "";
-
-				// Merge reasoning + content into a single combined token stream, mirroring
-				// the OpenAI adapter so the UI can auto-detect <think> blocks.
-				let combined = "";
-				if (deltaReasoning.trim().length > 0) {
-					if (!thinkOpen) {
-						combined += "<think>" + deltaReasoning;
-						thinkOpen = true;
-					} else {
-						combined += deltaReasoning;
-					}
-				}
-
-				if (deltaContent && deltaContent.length > 0) {
-					if (thinkOpen) {
-						combined += "</think>" + deltaContent;
+						const msgObj = nonStream.choices?.[0]?.message as
+							| (ChatCompletionMessageParam & {
+									reasoning?: string;
+									reasoning_content?: string;
+									tool_calls?: ChatCompletionMessageToolCall[];
+								})
+							| undefined;
+						const contentVal = msgObj?.content;
+						const msgContent = typeof contentVal === "string" ? contentVal : "";
+						const r =
+							typeof msgObj?.reasoning === "string"
+								? msgObj.reasoning
+								: typeof msgObj?.reasoning_content === "string"
+									? msgObj.reasoning_content
+									: "";
+						lastAssistantContent =
+							(r && r.length > 0 ? `<think>${r}</think>` : "") + msgContent;
 						thinkOpen = false;
-					} else {
-						combined += deltaContent;
-					}
-				}
 
-				if (combined.length > 0) {
-					lastAssistantContent += combined;
-					if (!sawToolCall) {
-						streamedContent = true;
-						yield { type: MessageUpdateType.Stream, token: combined };
-						tokenCount += combined.length;
+						const tc: ChatCompletionMessageToolCall[] = Array.isArray(msgObj?.tool_calls)
+							? ((msgObj?.tool_calls ?? []) as ChatCompletionMessageToolCall[])
+							: [];
+						if (tc.length > 0) {
+							nonStreamCalls = tc.map((t) => ({
+								id: t.id,
+								name: t.function?.name ?? "",
+								arguments: t.function?.arguments ?? "",
+							}));
+						}
+					} else {
+						throw err;
 					}
 				}
 			}
 			console.info(
-				{ sawToolCalls: Object.keys(toolCallState).length > 0, tokens: tokenCount, loop },
+				{
+					sawToolCalls:
+						(nonStreamCalls && nonStreamCalls.length > 0) ||
+						Object.keys(toolCallState).length > 0,
+					tokens: tokenCount,
+					loop,
+				},
 				"[mcp] completion stream closed"
 			);
 
-			if (Object.keys(toolCallState).length > 0) {
+			if ((nonStreamCalls && nonStreamCalls.length > 0) || Object.keys(toolCallState).length > 0) {
 				// If any streamed call is missing id, perform a quick non-stream retry to recover full tool_calls with ids
-				const missingId = Object.values(toolCallState).some((c) => c?.name && !c?.id);
+				const missingId =
+					!nonStreamCalls && Object.values(toolCallState).some((c) => c?.name && !c?.id);
 				let calls: NormalizedToolCall[];
-				if (missingId) {
+				if (nonStreamCalls) {
+					calls = nonStreamCalls;
+				} else if (missingId) {
 					console.debug(
 						{ loop },
 						"[mcp] missing tool_call id in stream; retrying non-stream to recover ids"
@@ -551,7 +774,11 @@ export async function* runMcpFlow({
 							},
 						}
 					);
-					const tc = nonStream.choices?.[0]?.message?.tool_calls ?? [];
+					const tc: ChatCompletionMessageToolCall[] = Array.isArray(
+						nonStream.choices?.[0]?.message?.tool_calls
+					)
+						? ((nonStream.choices?.[0]?.message?.tool_calls ?? []) as ChatCompletionMessageToolCall[])
+						: [];
 					calls = tc.map((t) => ({
 						id: t.id,
 						name: t.function?.name ?? "",
@@ -578,15 +805,40 @@ export async function* runMcpFlow({
 
 				// Avoid sending <think> content back to the model alongside tool_calls
 				// to prevent confusing follow-up reasoning. Strip any think blocks.
+				const thinkMatch = lastAssistantContent.match(/<think>([\s\S]*?)(?:<\/think>|$)/);
+				const reasoningContent = thinkMatch?.[1] ?? "";
 				const assistantContentForToolMsg = lastAssistantContent.replace(
 					/<think>[\s\S]*?(?:<\/think>|$)/g,
 					""
 				);
-				const assistantToolMessage: ChatCompletionMessageParam = {
-					role: "assistant",
-					content: assistantContentForToolMsg,
-					tool_calls: toolCalls,
-				};
+
+				const isDeepseekReasoner = /deepseek-reasoner/i.test(
+					String(targetModel.id ?? targetModel.name)
+				);
+
+				// DeepSeek thinking-mode tool-calls require reasoning_content to be present
+				// in the assistant message that contains tool_calls.
+				const assistantToolMessage = (
+					isDeepseekReasoner
+						? ({
+								role: "assistant",
+								content: assistantContentForToolMsg,
+								tool_calls: toolCalls,
+								reasoning_content: reasoningContent,
+							} as unknown as ChatCompletionMessageParam)
+						: ({
+								role: "assistant",
+								content: assistantContentForToolMsg,
+								tool_calls: toolCalls,
+							} as ChatCompletionMessageParam)
+				);
+
+				const maxToolOutputCharsForLlm = (() => {
+					const raw = config.MCP_MAX_TOOL_OUTPUT_CHARS_FOR_LLM;
+					if (typeof raw !== "string" || raw.trim().length === 0) return undefined;
+					const n = Number(raw);
+					return Number.isFinite(n) ? n : undefined;
+				})();
 
 				const exec = executeToolCalls({
 					calls,
@@ -596,6 +848,7 @@ export async function* runMcpFlow({
 					resolveFileRef,
 					toPrimitive,
 					processToolOutput,
+					maxToolOutputCharsForLlm,
 					abortSignal,
 				});
 				let toolMsgCount = 0;
@@ -604,11 +857,65 @@ export async function* runMcpFlow({
 					if (event.type === "update") {
 						yield event.update;
 					} else {
-						messagesOpenAI = [
-							...messagesOpenAI,
-							assistantToolMessage,
-							...(event.summary.toolMessages ?? []),
-						];
+						if (isDeepseekChat || isDeepseekReasoner) {
+							const toolRuns = event.summary.toolRuns ?? [];
+							const MAX_TOOL_OUTPUT_CHARS_PER_TOOL = 4000;
+							const MAX_TOOL_OUTPUT_CHARS_TOTAL = 8000;
+							const truncate = (value: unknown, max: number) => {
+								const s = value == null ? "" : typeof value === "string" ? value : String(value);
+								if (s.length <= max) return s;
+								return `${s.slice(0, max)}\n...[truncated ${s.length - max} chars]`;
+							};
+							const toolText = toolRuns
+								.map((r) => {
+									const params = (() => {
+										try {
+											return JSON.stringify(r.parameters ?? {}, null, 2);
+										} catch {
+											return "";
+										}
+									})();
+									const outputStr = (() => {
+										const out = (r as unknown as { output?: unknown })?.output;
+										if (typeof out === "string") return out;
+										try {
+											return JSON.stringify(out ?? "", null, 2);
+										} catch {
+											return String(out ?? "");
+										}
+									})();
+									const output = truncate(outputStr, MAX_TOOL_OUTPUT_CHARS_PER_TOOL);
+									return (
+										`[tool:${r.name}]` +
+										(params ? `\nparams:\n${truncate(params, 1000)}` : "") +
+										`\noutput:\n${output}`
+									);
+								})
+								.join("\n\n");
+							const toolTextLimited = truncate(toolText, MAX_TOOL_OUTPUT_CHARS_TOTAL);
+							messagesOpenAI = [
+								...messagesOpenAI,
+								{ role: "assistant", content: assistantContentForToolMsg },
+								{
+									role: "assistant",
+									content:
+										(toolTextLimited && toolTextLimited.length > 0
+											? `Результаты инструментов:\n\n${toolTextLimited}`
+											: "Результаты инструментов: (пусто)"),
+								},
+								{
+									role: "user",
+									content:
+										"Используй результаты инструментов выше и дай окончательный ответ пользователю. Не вызывай инструменты повторно.",
+								},
+							];
+						} else {
+							messagesOpenAI = [
+								...messagesOpenAI,
+								assistantToolMessage,
+								...(event.summary.toolMessages ?? []),
+							];
+						}
 						toolMsgCount = event.summary.toolMessages?.length ?? 0;
 						toolRunCount = event.summary.toolRuns?.length ?? 0;
 						console.info(
@@ -625,7 +932,6 @@ export async function* runMcpFlow({
 			// If a <think> block is still open, close it for the final output
 			if (thinkOpen) {
 				lastAssistantContent += "</think>";
-				thinkOpen = false;
 			}
 			if (!streamedContent && lastAssistantContent.trim().length > 0) {
 				yield { type: MessageUpdateType.Stream, token: lastAssistantContent };

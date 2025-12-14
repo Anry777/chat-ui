@@ -16,4 +16,4 @@ fi;
 
 export PUBLIC_VERSION=$(node -p "require('./package.json').version")
 
-dotenv -e /app/.env -c -- node --dns-result-order=ipv4first /app/build/index.js -- --host 0.0.0.0 --port 3000
+node --env-file=/app/.env --env-file-if-exists=/app/.env.local --dns-result-order=ipv4first /app/build/index.js -- --host 0.0.0.0 --port 3000

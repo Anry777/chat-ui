@@ -38,6 +38,7 @@ export interface ExecuteToolCallsParams {
 	};
 	abortSignal?: AbortSignal;
 	toolTimeoutMs?: number;
+	maxToolOutputCharsForLlm?: number;
 }
 
 export interface ToolCallExecutionResult {
@@ -70,6 +71,7 @@ export async function* executeToolCalls({
 	processToolOutput,
 	abortSignal,
 	toolTimeoutMs = 30_000,
+	maxToolOutputCharsForLlm,
 }: ExecuteToolCallsParams): AsyncGenerator<ToolExecutionEvent, void, undefined> {
 	const toolMessages: ChatCompletionMessageParam[] = [];
 	const toolRuns: ToolRun[] = [];
@@ -88,9 +90,26 @@ export async function* executeToolCalls({
 	const prepared = calls.map((call) => {
 		const argsObj = parseArgs(call.arguments);
 		const paramsClean: Record<string, Primitive> = {};
+		const MAX_PARAM_PREVIEW_CHARS = 2000;
+		const previewParam = (value: unknown): string => {
+			try {
+				const s = JSON.stringify(value, null, 2);
+				if (typeof s !== "string") return String(value);
+				if (s.length <= MAX_PARAM_PREVIEW_CHARS) return s;
+				return `${s.slice(0, MAX_PARAM_PREVIEW_CHARS)}\n...[truncated ${s.length - MAX_PARAM_PREVIEW_CHARS} chars]`;
+			} catch {
+				const s = String(value);
+				if (s.length <= MAX_PARAM_PREVIEW_CHARS) return s;
+				return `${s.slice(0, MAX_PARAM_PREVIEW_CHARS)}\n...[truncated ${s.length - MAX_PARAM_PREVIEW_CHARS} chars]`;
+			}
+		};
 		for (const [k, v] of Object.entries(argsObj ?? {})) {
 			const prim = toPrimitive(v);
-			if (prim !== undefined) paramsClean[k] = prim;
+			if (prim !== undefined) {
+				paramsClean[k] = prim;
+			} else if (v !== undefined) {
+				paramsClean[k] = previewParam(v);
+			}
 		}
 		// Attach any resolved image payloads _after_ computing paramsClean so that
 		// logging / status updates continue to show only the lightweight primitive
@@ -277,14 +296,24 @@ export async function* executeToolCalls({
 
 	// Collate outputs in original call order
 	results.sort((a, b) => a.index - b.index);
+	const maxCharsForLlm =
+		typeof maxToolOutputCharsForLlm === "number" && Number.isFinite(maxToolOutputCharsForLlm)
+			? Math.floor(maxToolOutputCharsForLlm)
+			: undefined;
+	const truncateForLlm = (value: string) => {
+		if (!maxCharsForLlm || maxCharsForLlm <= 0) return value;
+		if (value.length <= maxCharsForLlm) return value;
+		return `${value.slice(0, maxCharsForLlm)}\n...[truncated ${value.length - maxCharsForLlm} chars]`;
+	};
 	for (const r of results) {
 		const name = prepared[r.index].call.name;
 		const id = prepared[r.index].call.id;
 		if (!r.error) {
 			const output = r.output ?? "";
+			const llmOutput = truncateForLlm(output);
 			toolRuns.push({ name, parameters: r.paramsClean, output });
 			// For the LLM follow-up call, we keep only the textual output
-			toolMessages.push({ role: "tool", tool_call_id: id, content: output });
+			toolMessages.push({ role: "tool", tool_call_id: id, content: llmOutput });
 		}
 	}
 

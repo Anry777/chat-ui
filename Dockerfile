@@ -3,9 +3,6 @@ ARG INCLUDE_DB=false
 
 FROM node:24-slim AS base
 
-# install dotenv-cli
-RUN npm install -g dotenv-cli
-
 # switch to a user that works for spaces
 RUN userdel -r node
 RUN useradd -m -u 1000 user
@@ -34,7 +31,7 @@ COPY --chown=1000 entrypoint.sh /app/entrypoint.sh
 COPY --chown=1000 package.json /app/package.json
 COPY --chown=1000 package-lock.json /app/package-lock.json
 
-RUN chmod +x /app/entrypoint.sh
+RUN sed -i 's/\r$//' /app/entrypoint.sh && chmod +x /app/entrypoint.sh
 
 FROM node:24 AS builder
 
