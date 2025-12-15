@@ -1,4 +1,5 @@
 import { config } from "$lib/server/config";
+import { building } from "$app/environment";
 import type { ChatTemplateInput } from "$lib/types/Template";
 import { z } from "zod";
 import endpoints, { endpointSchema, type Endpoint } from "./endpoints/endpoints";
@@ -190,6 +191,31 @@ export let lastModelRefreshSummary: ModelsRefreshSummary = {
 	changed: [],
 	total: 0,
 };
+
+if (building) {
+	const placeholderModel =
+		{
+			id: "placeholder",
+			name: "placeholder",
+			displayName: "placeholder",
+			description: "",
+			preprompt: "",
+			parameters: {},
+			multimodal: false,
+			unlisted: true,
+			providers: [],
+			chatPromptRender: () => "",
+			hasInferenceAPI: false,
+			isRouter: false,
+			getEndpoint: async () => {
+				throw new Error("Models are not available during build");
+			},
+		} as unknown as ProcessedModel;
+
+	models = [placeholderModel];
+	defaultModel = placeholderModel;
+	taskModel = placeholderModel;
+}
 
 let inflightRefresh: Promise<ModelsRefreshSummary> | null = null;
 
@@ -471,7 +497,9 @@ const rebuildModels = async (): Promise<ModelsRefreshSummary> => {
 	return applyModelState(newModels, startedAt);
 };
 
-await rebuildModels();
+if (!building) {
+	await rebuildModels();
+}
 
 export const refreshModels = async (): Promise<ModelsRefreshSummary> => {
 	if (inflightRefresh) {
