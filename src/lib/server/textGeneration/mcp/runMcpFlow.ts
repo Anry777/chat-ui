@@ -423,6 +423,44 @@ export async function* runMcpFlow({
 		// Track whether we're inside a <think> block when the upstream streams
 		// provider-specific reasoning tokens (e.g. `reasoning` or `reasoning_content`).
 		let thinkOpen = false;
+		let requiredToolRetryDone = false;
+
+		const getLastUserText = (msgs: ChatCompletionMessageParam[]): string => {
+			const lastUser = [...msgs].reverse().find((m) => m.role === "user");
+			const c = (lastUser as unknown as { content?: unknown } | undefined)?.content;
+			if (typeof c === "string") return c;
+			if (Array.isArray(c)) {
+				return c
+					.map((part) => {
+						if (!part || typeof part !== "object") return "";
+						const p = part as { type?: unknown; text?: unknown };
+						return p.type === "text" && typeof p.text === "string" ? p.text : "";
+					})
+					.filter((s) => typeof s === "string" && s.length > 0)
+					.join("\n");
+			}
+			return "";
+		};
+
+		const computeShouldRequireTools = (msgs: ChatCompletionMessageParam[]): boolean => {
+			if (forceTools) return true;
+			try {
+				const reqMcp = (
+					locals as unknown as {
+						mcp?: {
+							selectedServers?: Array<unknown>;
+							selectedServerNames?: Array<unknown>;
+						};
+					}
+				)?.mcp;
+				const hasSelection =
+					(Array.isArray(reqMcp?.selectedServers) && reqMcp!.selectedServers.length > 0) ||
+					(Array.isArray(reqMcp?.selectedServerNames) && reqMcp!.selectedServerNames.length > 0);
+				if (hasSelection) return true;
+			} catch {}
+			const text = getLastUserText(msgs);
+			return /\b(mcp|tool|tools|инструмент|инструменты|mcp-сервер|mcp сервер)\b/i.test(text);
+		};
 
 		if (resolvedRoute && candidateModelId) {
 			yield {
@@ -441,6 +479,7 @@ export async function* runMcpFlow({
 			streamedContent = false;
 			let nonStreamCalls: NormalizedToolCall[] | null = null;
 			const modelName = String(targetModel.id ?? targetModel.name);
+			const shouldRequireToolsThisLoop = computeShouldRequireTools(messagesOpenAI);
 			const isDeepseekChat = /deepseek-chat/i.test(modelName);
 			const isDeepseekReasonerLoop = /deepseek-reasoner/i.test(modelName);
 			const useNonStreamCompletion = isDeepseekChat || isDeepseekReasonerLoop;
@@ -664,7 +703,7 @@ export async function* runMcpFlow({
 
 						if (combined.length > 0) {
 							lastAssistantContent += combined;
-							if (!sawToolCall) {
+							if (!sawToolCall && !(shouldRequireToolsThisLoop && loop === 0)) {
 								streamedContent = true;
 								yield { type: MessageUpdateType.Stream, token: combined };
 								tokenCount += combined.length;
@@ -750,6 +789,53 @@ export async function* runMcpFlow({
 				},
 				"[mcp] completion stream closed"
 			);
+
+			if (
+				!requiredToolRetryDone &&
+				shouldRequireToolsThisLoop &&
+				loop === 0 &&
+				!useNonStreamCompletion &&
+				(!nonStreamCalls || nonStreamCalls.length === 0) &&
+				Object.keys(toolCallState).length === 0
+			) {
+				requiredToolRetryDone = true;
+				try {
+					console.info(
+						{ loop },
+						"[mcp] no tool_calls with tool_choice=auto; retrying once with tool_choice=required"
+					);
+					const nonStream = await openai.chat.completions.create(
+						{
+							...completionBase,
+							messages: messagesOpenAI,
+							stream: false,
+							tool_choice: "required",
+						},
+						{
+							signal: abortSignal,
+							headers: {
+								"ChatUI-Conversation-ID": conv._id.toString(),
+								"X-use-cache": "false",
+								...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+							},
+						}
+					);
+
+					const msgObj = nonStream.choices?.[0]?.message as
+						| (ChatCompletionMessageParam & { tool_calls?: ChatCompletionMessageToolCall[] })
+						| undefined;
+					const tc: ChatCompletionMessageToolCall[] = Array.isArray(msgObj?.tool_calls)
+						? (msgObj?.tool_calls ?? [])
+						: [];
+					if (tc.length > 0) {
+						nonStreamCalls = tc.map((t) => ({
+							id: t.id,
+							name: t.function?.name ?? "",
+							arguments: t.function?.arguments ?? "",
+						}));
+					}
+				} catch {}
+			}
 
 			if ((nonStreamCalls && nonStreamCalls.length > 0) || Object.keys(toolCallState).length > 0) {
 				// If any streamed call is missing id, perform a quick non-stream retry to recover full tool_calls with ids
