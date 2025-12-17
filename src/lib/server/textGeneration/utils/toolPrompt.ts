@@ -13,6 +13,7 @@ export function buildToolPreprompt(tools: OpenAiTool[]): string {
 	});
 	return [
 		`You can use the following tools if helpful: ${names.join(", ")}.`,
+		`Use only tool names from the list above. Do not invent or guess tool names. If none apply, answer without calling tools.`,
 		`Today's date: ${currentDate}.`,
 		`If a tool generates an image, you can inline it directly: ![alt text](image_url).`,
 		`If a tool needs an image, set its image field ("input_image", "image", or "image_url") to a reference like "image_1", "image_2", etc. (ordered by when the user uploaded them).`,

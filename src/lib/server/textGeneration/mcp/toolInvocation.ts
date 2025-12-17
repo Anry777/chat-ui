@@ -308,11 +308,12 @@ export async function* executeToolCalls({
 	for (const r of results) {
 		const name = prepared[r.index].call.name;
 		const id = prepared[r.index].call.id;
-		if (!r.error) {
-			const output = r.output ?? "";
-			const llmOutput = truncateForLlm(output);
-			toolRuns.push({ name, parameters: r.paramsClean, output });
-			// For the LLM follow-up call, we keep only the textual output
+		const output = r.error ? `ERROR: ${r.error}` : (r.output ?? "");
+		const llmOutput = truncateForLlm(output);
+		toolRuns.push({ name, parameters: r.paramsClean, output });
+		// Always return a tool message (even on errors) so the model can recover.
+		// Some providers may reject empty tool_call_id; guard just in case.
+		if (typeof id === "string" && id.length > 0) {
 			toolMessages.push({ role: "tool", tool_call_id: id, content: llmOutput });
 		}
 	}
