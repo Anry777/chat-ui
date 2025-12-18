@@ -178,7 +178,7 @@ export async function endpointOai(
 
 				// PREPARE MESSAGES
 				log("DEBUG: Step 2 - Preparing messages with files.");
-				const messagesOpenAI: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+				let messagesOpenAI: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
 					await prepareMessagesWithFiles(messages, imageProcessor, isMultimodal ?? model.multimodal);
 				log("DEBUG: Step 3 - Finished preparing messages.");
 
