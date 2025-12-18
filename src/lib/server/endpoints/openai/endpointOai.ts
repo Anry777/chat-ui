@@ -169,6 +169,10 @@ export async function endpointOai(
 			locals,
 			abortSignal,
 		}) => {
+			console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+			console.log("!!! OpenAI Endpoint Handler Called !!!");
+			console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 			// AGGRESSIVE DEBUG LOGGING
 			const logPath = "/app/debug.log";
 			const log = (msg: string) => {
