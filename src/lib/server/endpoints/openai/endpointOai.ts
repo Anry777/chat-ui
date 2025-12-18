@@ -1,9 +1,4 @@
-import { z } from "zod";
-import { openAICompletionToTextGenerationStream } from "./openAICompletionToTextGenerationStream";
-import {
-	openAIChatToTextGenerationSingle,
-	openAIChatToTextGenerationStream,
-} from "./openAIChatToTextGenerationStream";
+import { promises as fs } from "fs";
 import type { CompletionCreateParamsStreaming } from "openai/resources/completions";
 import type {
 	ChatCompletionCreateParamsNonStreaming,
@@ -168,99 +163,111 @@ export async function endpointOai(
 			locals,
 			abortSignal,
 		}) => {
-			// PREPARE MESSAGES
-			console.log("DEBUG: Step 1 - Starting message preparation.");
-			let messagesOpenAI: OpenAI.Chat.Completions.ChatCompletionMessageParam[];
-			try {
-				messagesOpenAI = await prepareMessagesWithFiles(
-					messages,
-					imageProcessor,
-					isMultimodal ?? model.multimodal
-				);
-				console.log("DEBUG: Step 2 - Finished message preparation.");
-			} catch (e) {
-				console.error("ERROR: Crash during message preparation!", e);
-				throw e;
-			}
-
-			// NORMALIZE PREPROMPT
-			console.log("DEBUG: Step 3 - Normalizing preprompt.");
-			const normalizedPreprompt = typeof preprompt === "string" ? preprompt.trim() : "";
-
-			// Check if a system message already exists as the first message
-			const hasSystemMessage = messagesOpenAI.length > 0 && messagesOpenAI[0]?.role === "system";
-
-			if (hasSystemMessage) {
-				// Prepend normalized preprompt to existing system content when non-empty
-				if (normalizedPreprompt) {
-					const userSystemPrompt =
-						(typeof messagesOpenAI[0].content === "string"
-							? (messagesOpenAI[0].content as string)
-							: "") || "";
-					messagesOpenAI[0].content =
-						normalizedPreprompt + (userSystemPrompt ? "\n\n" + userSystemPrompt : "");
+			// AGGRESSIVE DEBUG LOGGING
+			const logPath = "/app/debug.log";
+			const log = (msg: string) => {
+				try {
+					fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
+				} catch (e) {
+					// Ignore fs errors
 				}
-			} else {
-				// Insert a system message only if the preprompt is non-empty
-				if (normalizedPreprompt) {
-					messagesOpenAI = [{ role: "system", content: normalizedPreprompt }, ...messagesOpenAI];
-				}
-			}
-
-			// Combine model defaults with request-specific parameters
-			const parameters = { ...model.parameters, ...generateSettings };
-			const body = {
-				model: model.id ?? model.name,
-				messages: messagesOpenAI,
-				stream: streamingSupported,
-				// Support two different ways of specifying token limits depending on the model
-				...(useCompletionTokens
-					? { max_completion_tokens: parameters?.max_tokens }
-					: { max_tokens: parameters?.max_tokens }),
-				stop: parameters?.stop,
-				temperature: parameters?.temperature,
-				top_p: parameters?.top_p,
-				frequency_penalty: parameters?.frequency_penalty,
-				presence_penalty: parameters?.presence_penalty,
 			};
 
-			// Handle both streaming and non-streaming responses with appropriate processors
-			if (streamingSupported) {
-				const openChatAICompletion = await openai.chat.completions.create(
-					body as ChatCompletionCreateParamsStreaming,
-					{
-						body: { ...body, ...extraBody },
-						headers: {
-							"ChatUI-Conversation-ID": conversationId?.toString() ?? "",
-							"X-use-cache": "false",
-							...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
-							// Bill to organization if configured (HuggingChat only)
-							...(config.isHuggingChat && locals?.billingOrganization
-								? { "X-HF-Bill-To": locals.billingOrganization }
-								: {}),
-						},
-						signal: abortSignal,
+			try {
+				log("DEBUG: Step 1 - Entered chat_completions handler.");
+
+				// PREPARE MESSAGES
+				log("DEBUG: Step 2 - Preparing messages with files.");
+				const messagesOpenAI: OpenAI.Chat.Completions.ChatCompletionMessageParam[] =
+					await prepareMessagesWithFiles(messages, imageProcessor, isMultimodal ?? model.multimodal);
+				log("DEBUG: Step 3 - Finished preparing messages.");
+
+				// NORMALIZE PREPROMPT
+				log("DEBUG: Step 4 - Normalizing preprompt.");
+				const normalizedPreprompt = typeof preprompt === "string" ? preprompt.trim() : "";
+
+				const hasSystemMessage = messagesOpenAI.length > 0 && messagesOpenAI[0]?.role === "system";
+
+				if (hasSystemMessage) {
+					if (normalizedPreprompt) {
+						const userSystemPrompt =
+							(typeof messagesOpenAI[0].content === "string"
+								? (messagesOpenAI[0].content as string)
+								: "") || "";
+						messagesOpenAI[0].content =
+							normalizedPreprompt + (userSystemPrompt ? "\n\n" + userSystemPrompt : "");
 					}
-				);
-				return openAIChatToTextGenerationStream(openChatAICompletion, () => routerMetadata);
-			} else {
-				const openChatAICompletion = await openai.chat.completions.create(
-					body as ChatCompletionCreateParamsNonStreaming,
-					{
-						body: { ...body, ...extraBody },
-						headers: {
-							"ChatUI-Conversation-ID": conversationId?.toString() ?? "",
-							"X-use-cache": "false",
-							...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
-							// Bill to organization if configured (HuggingChat only)
-							...(config.isHuggingChat && locals?.billingOrganization
-								? { "X-HF-Bill-To": locals.billingOrganization }
-								: {}),
-						},
-						signal: abortSignal,
+				} else {
+					if (normalizedPreprompt) {
+						messagesOpenAI = [
+							{ role: "system", content: normalizedPreprompt },
+							...messagesOpenAI,
+						];
 					}
-				);
-				return openAIChatToTextGenerationSingle(openChatAICompletion, () => routerMetadata);
+				}
+				log("DEBUG: Step 5 - Finished normalizing preprompt.");
+
+				// PREPARE BODY
+				log("DEBUG: Step 6 - Preparing request body.");
+				const parameters = { ...model.parameters, ...generateSettings };
+				const body = {
+					model: model.id ?? model.name,
+					messages: messagesOpenAI,
+					stream: streamingSupported,
+					...(useCompletionTokens
+						? { max_completion_tokens: parameters?.max_tokens }
+						: { max_tokens: parameters?.max_tokens }),
+					stop: parameters?.stop,
+					temperature: parameters?.temperature,
+					top_p: parameters?.top_p,
+					frequency_penalty: parameters?.frequency_penalty,
+					presence_penalty: parameters?.presence_penalty,
+				};
+				log("DEBUG: Step 7 - Finished preparing request body.");
+
+				// SEND REQUEST
+				if (streamingSupported) {
+					log("DEBUG: Step 8a - Sending STREAMING request.");
+					const openChatAICompletion = await openai.chat.completions.create(
+						body as ChatCompletionCreateParamsStreaming,
+						{
+							body: { ...body, ...extraBody },
+							headers: {
+								"ChatUI-Conversation-ID": conversationId?.toString() ?? "",
+								"X-use-cache": "false",
+								...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+								...(config.isHuggingChat && locals?.billingOrganization
+									? { "X-HF-Bill-To": locals.billingOrganization }
+									: {}),
+							},
+							signal: abortSignal,
+						}
+					);
+					log("DEBUG: Step 9a - STREAMING request sent.");
+					return openAIChatToTextGenerationStream(openChatAICompletion, () => routerMetadata);
+				} else {
+					log("DEBUG: Step 8b - Sending NON-STREAMING request.");
+					const openChatAICompletion = await openai.chat.completions.create(
+						body as ChatCompletionCreateParamsNonStreaming,
+						{
+							body: { ...body, ...extraBody },
+							headers: {
+								"ChatUI-Conversation-ID": conversationId?.toString() ?? "",
+								"X-use-cache": "false",
+								...(locals?.token ? { Authorization: `Bearer ${locals.token}` } : {}),
+								...(config.isHuggingChat && locals?.billingOrganization
+									? { "X-HF-Bill-To": locals.billingOrganization }
+									: {}),
+							},
+							signal: abortSignal,
+						}
+					);
+					log("DEBUG: Step 9b - NON-STREAMING request sent.");
+					return openAIChatToTextGenerationSingle(openChatAICompletion, () => routerMetadata);
+				}
+			} catch (e) {
+				log(`ERROR: CRASH IN HANDLER! Error: ${e.message}\nStack: ${e.stack}`);
+				throw e; // Re-throw the error to ensure the caller knows something went wrong
 			}
 		};
 	} else {
