@@ -71,10 +71,7 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 				(app) => {
 					return app
 						.derive(async ({ locals, params, query }) => {
-							console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-							console.log("!!! CONVERSATION :id HANDLER HIT !!!");
-							console.log("!!! ID:", params.id);
-							console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 
 							let conversation;
 							let shared = false;
@@ -96,10 +93,7 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 										_id: new ObjectId(params.id),
 										...authCondition(locals),
 									});
-									console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-									console.log("!!! Fetched conversation from DB !!!");
-									console.log(conversation);
-									console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 								} catch {
 									throw new Error("Invalid conversation ID format");
 								}
@@ -108,6 +102,13 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 
 								if (!conversation) {
 									console.log("!!! Conversation is null, checking existence...");
+									try {
+										console.log("!!! Pinging database...");
+										const pingResult = await collections.conversations.database.command({ ping: 1 });
+										console.log("!!! Ping successful:", pingResult);
+									} catch (e) {
+										console.error("!!! Database ping failed:", e);
+									}
 									const conversationExists =
 										(await collections.conversations.countDocuments({
 											_id: new ObjectId(params.id),
