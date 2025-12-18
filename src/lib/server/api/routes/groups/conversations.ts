@@ -96,6 +96,11 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 									...authCondition(locals),
 								});
 
+								console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+								console.log("!!! Fetched conversation from DB !!!");
+								console.log(conversation);
+								console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 								if (!conversation) {
 									const conversationExists =
 										(await collections.conversations.countDocuments({
