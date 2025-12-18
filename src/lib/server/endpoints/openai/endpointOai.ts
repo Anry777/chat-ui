@@ -2,6 +2,9 @@ import { z } from "zod";
 import * as fs from "fs";
 import { openAICompletionToTextGenerationStream } from "./openAICompletionToTextGenerationStream";
 import {
+	openAIChatToTextGenerationSingle,
+	openAIChatToTextGenerationStream,
+} from "./openAIChatToTextGenerationStream";
 import type { CompletionCreateParamsStreaming } from "openai/resources/completions";
 import type {
 	ChatCompletionCreateParamsNonStreaming,
