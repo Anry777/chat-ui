@@ -28,20 +28,22 @@ export type RunMcpFlowContext = Pick<
 > & { messages: EndpointMessage[] };
 
 export async function* runMcpFlow({
-	model,
-	conv,
+	endpoint,
+	conversation,
 	messages,
-	assistant,
-	forceMultimodal,
-	forceTools,
-	locals,
-	preprompt,
-	abortSignal,
+	isContinue,
+	isRetry,
+	webSearch,
+	tools,
 }: RunMcpFlowContext & { preprompt?: string; abortSignal?: AbortSignal }): AsyncGenerator<
 	MessageUpdate,
-	boolean,
-	undefined
+	boolean | void
 > {
+	console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+	console.log("!!! MCP Flow Handler Called !!!");
+	console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
+
 	// Start from env-configured servers
 	let servers = getMcpServers();
 	try {
