@@ -214,6 +214,9 @@ export async function endpointOai(
 
 			// Handle both streaming and non-streaming responses with appropriate processors
 			if (streamingSupported) {
+				console.log("DEBUG: Sending payload to OPENAI_BASE_URL");
+				console.log("DEBUG: Body:", JSON.stringify(body, null, 2));
+				console.log("DEBUG: Extra Body:", JSON.stringify(extraBody, null, 2));
 				const openChatAICompletion = await openai.chat.completions.create(
 					body as ChatCompletionCreateParamsStreaming,
 					{
@@ -232,6 +235,9 @@ export async function endpointOai(
 				);
 				return openAIChatToTextGenerationStream(openChatAICompletion, () => routerMetadata);
 			} else {
+				console.log("DEBUG: Sending payload to OPENAI_BASE_URL (non-streaming)");
+				console.log("DEBUG: Body:", JSON.stringify(body, null, 2));
+				console.log("DEBUG: Extra Body:", JSON.stringify(extraBody, null, 2));
 				const openChatAICompletion = await openai.chat.completions.create(
 					body as ChatCompletionCreateParamsNonStreaming,
 					{
