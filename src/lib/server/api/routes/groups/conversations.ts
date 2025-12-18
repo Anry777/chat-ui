@@ -71,6 +71,11 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 				(app) => {
 					return app
 						.derive(async ({ locals, params, query }) => {
+							console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+							console.log("!!! CONVERSATION :id HANDLER HIT !!!");
+							console.log("!!! ID:", params.id);
+							console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 							let conversation;
 							let shared = false;
 
