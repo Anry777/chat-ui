@@ -107,6 +107,7 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 
 
 								if (!conversation) {
+									console.log("!!! Conversation is null, checking existence...");
 									const conversationExists =
 										(await collections.conversations.countDocuments({
 											_id: new ObjectId(params.id),
