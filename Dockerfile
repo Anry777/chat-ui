@@ -18,7 +18,7 @@ RUN touch /app/.env.local
 
 USER root
 RUN apt-get update
-RUN apt-get install -y libgomp1 libcurl4 curl dnsutils nano
+RUN apt-get install -y libgomp1 libcurl4 curl dnsutils nano libvips-dev build-essential
 
 # ensure npm cache dir exists before adjusting ownership
 RUN mkdir -p /home/user/.npm && chown -R 1000:1000 /home/user/.npm
