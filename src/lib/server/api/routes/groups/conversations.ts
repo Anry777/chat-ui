@@ -87,19 +87,15 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 							} else {
 								// todo: add validation on params.id
 								try {
-									new ObjectId(params.id);
+									conversation = await collections.conversations.findOne({
+										_id: new ObjectId(params.id),
+										...authCondition(locals),
+									});
 								} catch {
 									throw new Error("Invalid conversation ID format");
 								}
-								conversation = await collections.conversations.findOne({
-									_id: new ObjectId(params.id),
-									...authCondition(locals),
-								});
 
-								console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-								console.log("!!! Fetched conversation from DB !!!");
-								console.log(conversation);
-								console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+
 
 								if (!conversation) {
 									const conversationExists =
