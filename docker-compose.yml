@@ -31,7 +31,7 @@ services:
     env_file:
       - .env.local
     environment:
-      ORIGIN: http://10.1.2.125:3000
+      ORIGIN: http://localhost:3000
       PROTOCOL_HEADER: x-forwarded-proto
       MONGODB_URL: ${CHATUI_MONGODB_URL:-mongodb://mongodb:27017/?replicaSet=rs0}
       MONGODB_DB_NAME: ${MONGODB_DB_NAME:-chat-ui}
