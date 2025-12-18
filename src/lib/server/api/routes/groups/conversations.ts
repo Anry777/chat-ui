@@ -101,18 +101,12 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 
 
 								if (!conversation) {
-									console.log("!!! Conversation is null, checking existence...");
-									try {
-										console.log("!!! Pinging database...");
-										const pingResult = await collections.conversations.database.command({ ping: 1 });
-										console.log("!!! Ping successful:", pingResult);
-									} catch (e) {
-										console.error("!!! Database ping failed:", e);
-									}
-									const conversationExists =
-										(await collections.conversations.countDocuments({
+									const conversationExists = !!(await collections.conversations.findOne(
+										{
 											_id: new ObjectId(params.id),
-										})) !== 0;
+										},
+										{ projection: { _id: 1 } }
+									));
 
 									if (conversationExists) {
 										throw new Error(
