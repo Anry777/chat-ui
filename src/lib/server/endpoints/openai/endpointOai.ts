@@ -175,7 +175,8 @@ export async function endpointOai(
 				try {
 					fs.appendFileSync(logPath, `[${new Date().toISOString()}] ${msg}\n`);
 				} catch (e) {
-					// Ignore fs errors
+					console.error("!!!!!!!! FAILED TO WRITE LOG !!!!!!!!", e);
+					// Still ignore, but log to stderr
 				}
 			};
 
