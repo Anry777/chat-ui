@@ -190,9 +190,13 @@ export const authCondition = (locals: App.Locals) => {
 		throw new Error("User or sessionId is required");
 	}
 
-	return locals.user
+	const condition = locals.user
 		? { userId: locals.user._id }
 		: { sessionId: locals.sessionId, userId: { $exists: false } };
+	
+	console.log("!!! AUTH CONDITION:", condition); // ADD THIS LINE
+
+	return condition;
 };
 
 export function tokenSetToSessionOauth(tokenSet: TokenSet): Session["oauth"] {

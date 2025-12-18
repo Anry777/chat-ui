@@ -96,6 +96,10 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 										_id: new ObjectId(params.id),
 										...authCondition(locals),
 									});
+									console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
+									console.log("!!! Fetched conversation from DB !!!");
+									console.log(conversation);
+									console.log("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
 								} catch {
 									throw new Error("Invalid conversation ID format");
 								}
