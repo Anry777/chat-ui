@@ -68,69 +68,74 @@ export const conversationGroup = new Elysia().use(authPlugin).group("/conversati
 						id: t.String(),
 					}),
 				},
-				(app) => {
-					return app
-						.derive(async ({ locals, params, query }) => {
-
-
-							let conversation;
-							let shared = false;
-
-							// if the conversation is shared
-							if (params.id.length === 7) {
-								// shared link of length 7
-								conversation = await collections.sharedConversations.findOne({
-									_id: params.id,
-								});
-								shared = true;
-								if (!conversation) {
-									throw new Error("Conversation not found");
-								}
-							} else {
-								// todo: add validation on params.id
-								try {
-									conversation = await collections.conversations.findOne({
-										_id: new ObjectId(params.id),
-										...authCondition(locals),
-									});
-
-								} catch {
-									throw new Error("Invalid conversation ID format");
-								}
-
-
-
-								if (!conversation) {
-									const conversationExists = !!(await collections.conversations.findOne(
-										{
-											_id: new ObjectId(params.id),
-										},
-										{ projection: { _id: 1 } }
-									));
-
-									if (conversationExists) {
-										throw new Error(
-											"You don't have access to this conversation. If someone gave you this link, ask them to use the 'share' feature instead."
-										);
-									}
-
-									throw new Error("Conversation not found.");
-								}
-								if (query.fromShare && conversation.meta?.fromShareId === query.fromShare) {
-									shared = true;
-								}
-							}
-
-							const convertedConv = {
-								...conversation,
-								...convertLegacyConversation(conversation),
-								shared,
-							};
-
-							return { conversation: convertedConv };
-						})
-						.get(
-							"",
+								(app) => {
+									return app
+										.derive(async ({ locals, params, query }) => {
+											console.log("!!! CONVERSATION :id HANDLER HIT !!! ID:", params.id);
+											let conversation;
+											let shared = false;
+				
+											// if the conversation is shared
+											if (params.id.length === 7) {
+												// shared link of length 7
+												conversation = await collections.sharedConversations.findOne({
+													_id: params.id,
+												});
+												shared = true;
+												if (!conversation) {
+													throw new Error("Conversation not found");
+												}
+											} else {
+												// todo: add validation on params.id
+												try {
+													console.log("!!! Finding conversation...");
+													conversation = await collections.conversations.findOne({
+														_id: new ObjectId(params.id),
+														...authCondition(locals),
+													});
+													console.log("!!! Found conversation:", conversation);
+												} catch (e) {
+													console.error("!!! FAILED to find conversation:", e);
+													throw new Error("Invalid conversation ID format on findOne");
+												}
+				
+												if (!conversation) {
+													console.log("!!! Conversation is null, checking existence...");
+													try {
+														console.log("!!! Counting documents...");
+														const conversationExists =
+															(await collections.conversations.countDocuments({
+																_id: new ObjectId(params.id),
+															})) !== 0;
+														console.log("!!! Counted documents. Exists:", conversationExists);
+				
+														if (conversationExists) {
+															throw new Error(
+																"You don't have access to this conversation. If someone gave you this link, ask them to use the 'share' feature instead."
+															);
+														}
+				
+														throw new Error("Conversation not found.");
+													} catch (e) {
+														console.error("!!! FAILED during existence check:", e);
+														throw e; // re-throw the error to see it
+													}
+												}
+												if (query.fromShare && conversation.meta?.fromShareId === query.fromShare) {
+													shared = true;
+												}
+											}
+				
+											const convertedConv = {
+												...conversation,
+												...convertLegacyConversation(conversation),
+												shared,
+											};
+				
+											return { conversation: convertedConv };
+										})
+										.get(
+											"",
 							async ({ conversation }) => {
 								return {
 									messages: conversation.messages,
