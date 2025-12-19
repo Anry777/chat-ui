@@ -159,7 +159,9 @@ type ExtraConfigKeys =
 	| "METRICS_PORT"
 	| "MCP_SERVERS"
 	| "MCP_FORWARD_HF_USER_TOKEN"
-	| "MCP_MAX_TOOL_OUTPUT_CHARS_FOR_LLM";
+	| "MCP_MAX_TOOL_OUTPUT_CHARS_FOR_LLM"
+	| "DEFAULT_SYSTEM_PROMPT"
+	| "DEFAULT_MODEL";
 
 type ConfigProxy = ConfigManager & { [K in ConfigKey | ExtraConfigKeys]: string };
 

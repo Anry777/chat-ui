@@ -124,7 +124,7 @@ const processModel = async (m: ModelConfig) => ({
 	chatPromptRender: await getChatPromptRender(m),
 	id: m.id || m.name,
 	displayName: m.displayName || m.name,
-	preprompt: m.prepromptUrl ? await fetch(m.prepromptUrl).then((r) => r.text()) : m.preprompt,
+	preprompt: m.prepromptUrl ? await fetch(m.prepromptUrl).then((r) => r.text()) : (m.preprompt || config.DEFAULT_SYSTEM_PROMPT),
 	parameters: { ...m.parameters, stop_sequences: m.parameters?.stop },
 	unlisted: m.unlisted ?? false,
 });
@@ -482,6 +482,17 @@ const buildModels = async (): Promise<ProcessedModel[]> => {
 
 			// Put alias first
 			decorated = [aliasModel, ...decorated];
+		}
+
+		const defaultModelId = config.DEFAULT_MODEL;
+		if (defaultModelId) {
+			const index = decorated.findIndex(
+				(m) => m.id === defaultModelId || m.name === defaultModelId
+			);
+			if (index > -1) {
+				const [model] = decorated.splice(index, 1);
+				decorated.unshift(model);
+			}
 		}
 
 		return decorated;
